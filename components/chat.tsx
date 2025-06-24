@@ -7,9 +7,13 @@ import { useScrollToBottom } from "@/hooks/use-scroll-to-bottom";
 import { ToolInvocation } from "ai";
 import { useChat } from "ai/react";
 import { toast } from "sonner";
+import { useSearchParams } from "next/navigation";
 
 export function Chat() {
   const chatId = "001";
+  const searchParams = useSearchParams();
+  const mode = searchParams.get('mode') || 'function';
+  const debug = searchParams.get('debug') || 'false';
 
   const {
     messages,
@@ -21,6 +25,7 @@ export function Chat() {
     isLoading,
     stop,
   } = useChat({
+    api: `/api/chat?mode=${mode}&debug=${debug}`,
     maxSteps: 4,
     onError: (error) => {
       if (error.message.includes("Too many requests")) {

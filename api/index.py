@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from openai import OpenAI
 from .utils.prompt import ClientMessage, convert_to_openai_messages
 from .utils.tools import get_current_weather
+from .utils.xml_agent import get_xml_system_prompt, parse_xml_response, execute_tool
 
 
 load_dotenv(".env.local")
@@ -140,14 +141,79 @@ def stream_text(messages: List[ChatCompletionMessageParam], protocol: str = 'dat
                 completion=completion_tokens
             )
 
-
-
+def stream_text_xml(messages: List[ChatCompletionMessageParam], debug: bool = False):
+    """Stream responses using XML parsing approach"""
+    
+    # Insert XML system prompt - replace any existing system message
+    xml_messages = [{"role": "system", "content": get_xml_system_prompt()}]
+    
+    # Add user messages (skip any existing system messages)
+    for msg in messages:
+        if msg["role"] != "system":
+            xml_messages.append(msg)
+    
+    try:
+        # Get complete response (not streaming for XML parsing)
+        response = client.chat.completions.create(
+            messages=xml_messages,
+            model="gpt-4o",
+            stream=False,
+        )
+        
+        response_content = response.choices[0].message.content
+        
+        # If debug mode, show raw XML
+        if debug:
+            debug_output = f"🔍 RAW XML RESPONSE:\n\n{response_content}\n\n" + "="*50 + "\n\n"
+            yield f'0:{json.dumps(debug_output)}\n'
+        
+        # Parse XML response
+        reasoning, tool_call = parse_xml_response(response_content)
+        
+        # Stream the reasoning
+        if reasoning:
+            if debug:
+                parsed_output = f"📋 PARSED REASONING:\n\n{reasoning}\n\n"
+                yield f'0:{json.dumps(parsed_output)}\n'
+            else:
+                yield f'0:{json.dumps(reasoning)}\n'
+        
+        # Handle tool call if present
+        if tool_call:
+            tool_call_id = "xml_tool_call_1"
+            
+            if debug:
+                tool_debug = f"🔧 PARSED TOOL CALL:\n\n{json.dumps(tool_call, indent=2)}\n\n"
+                yield f'0:{json.dumps(tool_debug)}\n'
+            
+            # Yield tool call start
+            yield f'9:{{"toolCallId":"{tool_call_id}","toolName":"{tool_call["tool"]}","args":{json.dumps(tool_call["args"])}}}\n'
+            
+            # Execute tool
+            tool_result = execute_tool(tool_call)
+            
+            # Yield tool result
+            yield f'a:{{"toolCallId":"{tool_call_id}","toolName":"{tool_call["tool"]}","args":{json.dumps(tool_call["args"])},"result":{json.dumps(tool_result)}}}\n'
+        
+        # Yield completion
+        usage = response.usage
+        yield f'e:{{"finishReason":"stop","usage":{{"promptTokens":{usage.prompt_tokens},"completionTokens":{usage.completion_tokens}}},"isContinued":false}}\n'
+        
+    except Exception as e:
+        # Handle errors gracefully
+        error_msg = f"Error in XML processing: {str(e)}"
+        yield f'0:{json.dumps(error_msg)}\n'
+        yield f'e:{{"finishReason":"stop","usage":{{"promptTokens":0,"completionTokens":0}},"isContinued":false}}\n'
 
 @app.post("/api/chat")
-async def handle_chat_data(request: Request, protocol: str = Query('data')):
+async def handle_chat_data(request: Request, protocol: str = Query('data'), mode: str = Query('function'), debug: bool = Query(False)):
     messages = request.messages
     openai_messages = convert_to_openai_messages(messages)
 
-    response = StreamingResponse(stream_text(openai_messages, protocol))
+    if mode == 'xml':
+        response = StreamingResponse(stream_text_xml(openai_messages, debug=debug))
+    else:
+        response = StreamingResponse(stream_text(openai_messages, protocol))
+        
     response.headers['x-vercel-ai-data-stream'] = 'v1'
     return response
